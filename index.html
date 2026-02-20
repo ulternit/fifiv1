@@ -6,62 +6,112 @@
 
 
 <meta charset="UTF-8">
-<title>Game Lobby</title>
+<title>Universal Chat</title>
 
 <style>
 body{
+    margin:0;
+    font-family:Arial;
     background:#0b1020;
     color:white;
-    font-family:Arial;
-    text-align:center;
+}
+
+/* ---------- LAYOUT ---------- */
+
+#board, #chatView{
+    padding:20px;
+}
+
+.room{
+    background:#1c2b60;
+    padding:12px;
+    margin:8px 0;
+    border-radius:8px;
+    cursor:pointer;
 }
 
 #chat{
-    width:80%;
-    height:320px;
-    margin:20px auto;
-    background:#111933;
+    height:300px;
     overflow-y:auto;
+    background:#111933;
     padding:10px;
     border-radius:10px;
-    text-align:left;
 }
 
-.msg{
-    background:#1c2b60;
-    margin:6px 0;
-    padding:6px;
-    border-radius:6px;
+.msg{margin:6px 0;padding:6px;background:#1e2a55;border-radius:6px;}
+
+#users{
+    position:absolute;
+    right:0;
+    top:0;
+    width:200px;
+    height:100%;
+    background:#0f1735;
+    padding:10px;
 }
 
-img,video{max-width:240px;border-radius:6px;margin-top:6px;}
+.avatar{
+    width:28px;
+    height:28px;
+    border-radius:50%;
+    vertical-align:middle;
+    margin-right:6px;
+}
+
+.typing{
+    font-size:12px;
+    opacity:.7;
+}
 </style>
 
 
 
 
-<h1>🌐 Game Lobby Chat</h1>
+<div id="board">
+<h2>🌐 Chatroom Board</h2>
+
+<input id="roomName" placeholder="Room name">
+<input id="roomPass" placeholder="Password (optional)">
+<button onclick="createRoom()">Create Room</button>
+
+<div id="rooms"></div>
+</div>
+
+<div id="chatView" style="display:none">
+
+<button onclick="leaveRoom()">⬅ Back</button>
+
+<h2 id="roomTitle"></h2>
 
 <div id="chat"></div>
 
-<input id="message" placeholder="Type message or paste link..." style="width:55%">
-<button onclick="sendMessage()">Send</button>
-<input type="file" id="fileInput">
+<div class="typing" id="typing"></div>
+
+<input id="msg" placeholder="Message..." style="width:60%">
+<button onclick="sendMsg()">Send</button>
+<button onclick="startVoice()">🎤 Voice</button>
+
+<input type="file" id="fileInput" hidden="">
+
+<div id="users"></div>
+
+</div>
 
 <script>
+/* ---------- CONNECTION ---------- */
 
-// RANDOM NAME
-const username="Player-"+Math.floor(Math.random()*9999);
-
-// PUBLIC WEBSOCKET RELAY (no signup required)
 const socket=new WebSocket("wss://ws.ifelse.io");
 
-// unique room
-const ROOM="game-grails-room";
+const username=prompt("Choose username:");
+const avatar=`https://api.dicebear.com/8.x/thumbs/svg?seed=${username}`;
 
-const chat=document.getElementById("chat");
+let currentRoom=null;
+let rooms={};
+let users={};
 
-function add(html){
+/* ---------- UI HELPERS ---------- */
+
+function addChat(html){
     const d=document.createElement("div");
     d.className="msg";
     d.innerHTML=html;
@@ -69,102 +119,167 @@ function add(html){
     chat.scrollTop=chat.scrollHeight;
 }
 
-socket.onopen=()=>{
-    socket.send(JSON.stringify({
-        type:"join",
-        room:ROOM,
-        name:username
-    }));
-};
+function renderRooms(){
+    roomsDiv.innerHTML="";
+    Object.values(rooms).forEach(r=>{
+        const div=document.createElement("div");
+        div.className="room";
+        div.textContent=r.name+(r.private?" 🔒":"");
+        div.onclick=()=>joinRoom(r.id);
+        roomsDiv.appendChild(div);
+    });
+}
 
-socket.onmessage=(event)=>{
-    const data=JSON.parse(event.data);
+function renderUsers(){
+    usersDiv.innerHTML="<h4>Online</h4>";
+    Object.values(users).forEach(u=>{
+        usersDiv.innerHTML+=
+        `<div><img class="avatar" src="${u.avatar}">${u.name}</div>`;
+    });
+}
 
-    if(data.room!==ROOM) return;
+/* ---------- SOCKET ---------- */
 
-    if(data.type==="chat"){
-        displayChat(data);
+socket.onmessage=e=>{
+    const data=JSON.parse(e.data);
+
+    if(data.type==="rooms"){
+        rooms=data.rooms;
+        renderRooms();
     }
 
-    if(data.type==="file"){
+    if(data.type==="chat" && data.room===currentRoom){
+        addChat(`<img class="avatar" src="${data.avatar}">
+        <b>${data.name}</b>: ${data.text}`);
+    }
+
+    if(data.type==="users" && data.room===currentRoom){
+        users=data.users;
+        renderUsers();
+    }
+
+    if(data.type==="typing" && data.room===currentRoom){
+        typing.textContent=data.name+" is typing...";
+        setTimeout(()=>typing.textContent="",1200);
+    }
+
+    if(data.type==="file" && data.room===currentRoom){
         receiveFile(data);
     }
 };
 
+/* ---------- ROOMS ---------- */
+
+function createRoom(){
+    socket.send(JSON.stringify({
+        type:"createRoom",
+        name:roomName.value,
+        password:roomPass.value
+    }));
+}
+
+function joinRoom(id){
+    const room=rooms[id];
+
+    if(room.private){
+        const pass=prompt("Enter password:");
+        socket.send(JSON.stringify({
+            type:"join",
+            room:id,
+            password:pass,
+            name:username,
+            avatar
+        }));
+    }else{
+        socket.send(JSON.stringify({
+            type:"join",
+            room:id,
+            name:username,
+            avatar
+        }));
+    }
+
+    currentRoom=id;
+    board.style.display="none";
+    chatView.style.display="block";
+    roomTitle.textContent=room.name;
+}
+
+function leaveRoom(){
+    location.reload();
+}
+
 /* ---------- CHAT ---------- */
 
-function sendMessage(){
-    const input=document.getElementById("message");
-    const text=input.value.trim();
-    if(!text) return;
+msg.addEventListener("input",()=>{
+    socket.send(JSON.stringify({
+        type:"typing",
+        room:currentRoom,
+        name:username
+    }));
+});
 
-    const msg={
+function sendMsg(){
+    socket.send(JSON.stringify({
         type:"chat",
-        room:ROOM,
+        room:currentRoom,
         name:username,
-        text
-    };
-
-    socket.send(JSON.stringify(msg));
-    displayChat(msg);
-
-    input.value="";
+        avatar,
+        text:msg.value
+    }));
+    msg.value="";
 }
 
-function displayChat(d){
-    let html=`<b>${d.name}:</b> `;
+/* ---------- DRAG DROP ---------- */
 
-    if(d.text.startsWith("http"))
-        html+=`<a href="${d.text}" target="_blank">${d.text}</a>`;
-    else
-        html+=d.text;
+document.addEventListener("dragover",e=>e.preventDefault());
 
-    add(html);
-}
+document.addEventListener("drop",e=>{
+    e.preventDefault();
+    const file=e.dataTransfer.files[0];
+    sendFile(file);
+});
 
-/* ---------- FILES ---------- */
+fileInput.onchange=e=>sendFile(e.target.files[0]);
 
-document.getElementById("fileInput").addEventListener("change",e=>{
-    const file=e.target.files[0];
-    if(!file) return;
-
+function sendFile(file){
     const reader=new FileReader();
-
     reader.onload=x=>{
-        const msg={
+        socket.send(JSON.stringify({
             type:"file",
-            room:ROOM,
+            room:currentRoom,
             name:username,
+            avatar,
             filename:file.name,
             filetype:file.type,
             data:x.target.result
-        };
-
-        socket.send(JSON.stringify(msg));
-        receiveFile(msg);
+        }));
     };
-
     reader.readAsDataURL(file);
-});
+}
 
 function receiveFile(d){
-
-    let html=`<b>${d.name} sent:</b><br>`;
+    let html=`<img class="avatar" src="${d.avatar}">
+    <b>${d.name}</b><br>`;
 
     if(d.filetype.startsWith("image"))
         html+=`<img src="${d.data}">`;
     else if(d.filetype.startsWith("video"))
-        html+=`<video controls src="${d.data}"></video>`;
+        html+=`<video controls src="${d.data}" width="240"></video>`;
     else
-        html+=`<a download="${d.filename}" href="${d.data}">Download ${d.filename}</a>`;
+        html+=`<a download="${d.filename}" href="${d.data}">
+        Download ${d.filename}</a>`;
 
-    add(html);
+    addChat(html);
 }
 
-/* ENTER KEY SEND */
-document.getElementById("message").addEventListener("keypress",e=>{
-    if(e.key==="Enter") sendMessage();
-});
+/* ---------- VOICE CHAT ---------- */
+
+let audioStream;
+async function startVoice(){
+    audioStream=await navigator.mediaDevices.getUserMedia({audio:true});
+    addChat("🎤 Voice connected (browser mic active)");
+}
 
 </script>
 
