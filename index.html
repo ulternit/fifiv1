@@ -6,7 +6,7 @@
 
 
 <meta charset="UTF-8">
-<title>Game Lobby Chat</title>
+<title>Game Lobby</title>
 
 <style>
 body{
@@ -16,19 +16,10 @@ body{
     text-align:center;
 }
 
-#players{margin:10px;}
-.player{
-    background:#1e2a55;
-    padding:8px;
-    margin:4px auto;
-    width:220px;
-    border-radius:8px;
-}
-
 #chat{
     width:80%;
-    height:300px;
-    margin:15px auto;
+    height:320px;
+    margin:20px auto;
     background:#111933;
     overflow-y:auto;
     padding:10px;
@@ -37,55 +28,40 @@ body{
 }
 
 .msg{
+    background:#1c2b60;
     margin:6px 0;
     padding:6px;
-    background:#1c2b60;
     border-radius:6px;
 }
 
-img,video{max-width:250px;border-radius:6px;margin-top:6px;}
+img,video{max-width:240px;border-radius:6px;margin-top:6px;}
 </style>
 
 
 
 
-<h1>🌐 Game Lobby</h1>
+<h1>🌐 Game Lobby Chat</h1>
 
-<div id="players"></div>
 <div id="chat"></div>
 
-<input id="msg" placeholder="Message..." style="width:50%">
-<button onclick="sendMsg()">Send</button>
+<input id="message" placeholder="Type message or paste link..." style="width:55%">
+<button onclick="sendMessage()">Send</button>
 <input type="file" id="fileInput">
 
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-
 <script>
-const ROOM_ID = "global-game-room-fixed"; // ONE TRUE HOST
 
-const username = "Player-" + Math.floor(Math.random()*10000);
+// RANDOM NAME
+const username="Player-"+Math.floor(Math.random()*9999);
 
-const peer = new Peer();
-let connections = {};
-let players = {};
-let seenMessages = new Set();
+// PUBLIC WEBSOCKET RELAY (no signup required)
+const socket=new WebSocket("wss://ws.ifelse.io");
 
-const playersDiv=document.getElementById("players");
+// unique room
+const ROOM="game-grails-room";
+
 const chat=document.getElementById("chat");
 
-/* ---------- UI ---------- */
-
-function renderPlayers(){
-    playersDiv.innerHTML="<h3>Players</h3>";
-    Object.values(players).forEach(p=>{
-        const d=document.createElement("div");
-        d.className="player";
-        d.textContent=p;
-        playersDiv.appendChild(d);
-    });
-}
-
-function addChat(html){
+function add(html){
     const d=document.createElement("div");
     d.className="msg";
     d.innerHTML=html;
@@ -93,121 +69,57 @@ function addChat(html){
     chat.scrollTop=chat.scrollHeight;
 }
 
-/* ---------- NETWORK ---------- */
-
-peer.on("open", id=>{
-
-    players[id]=username;
-    renderPlayers();
-
-    // try connect to host
-    const conn=peer.connect(ROOM_ID);
-
-    conn.on("open",()=>{
-        setupConnection(conn);
-    });
-
-    // if host doesn't exist → become host
-    peer.on("connection", incoming=>{
-        setupConnection(incoming);
-    });
-
-});
-
-/* ---------- CONNECTION ---------- */
-
-function setupConnection(conn){
-
-    if(connections[conn.peer]) return;
-    connections[conn.peer]=conn;
-
-    conn.send({
+socket.onopen=()=>{
+    socket.send(JSON.stringify({
         type:"join",
-        id:peer.id,
+        room:ROOM,
         name:username
-    });
+    }));
+};
 
-    conn.on("data", handleData);
+socket.onmessage=(event)=>{
+    const data=JSON.parse(event.data);
 
-    conn.on("close",()=>{
-        delete players[conn.peer];
-        renderPlayers();
-    });
-}
-
-/* ---------- MESSAGE HANDLER ---------- */
-
-function handleData(data){
-
-    // prevent duplicates
-    if(data.msgId){
-        if(seenMessages.has(data.msgId)) return;
-        seenMessages.add(data.msgId);
-    }
-
-    if(data.type==="join"){
-        players[data.id]=data.name;
-        renderPlayers();
-
-        broadcast({
-            type:"players",
-            players
-        });
-    }
-
-    if(data.type==="players"){
-        players=data.players;
-        players[peer.id]=username;
-        renderPlayers();
-    }
+    if(data.room!==ROOM) return;
 
     if(data.type==="chat"){
-        showChat(data);
-        broadcast(data);
+        displayChat(data);
     }
 
     if(data.type==="file"){
         receiveFile(data);
-        broadcast(data);
     }
-}
-
-/* ---------- BROADCAST ---------- */
-
-function broadcast(data){
-    Object.values(connections).forEach(c=>{
-        if(c.open) c.send(data);
-    });
-}
+};
 
 /* ---------- CHAT ---------- */
 
-function sendMsg(){
-    const input=document.getElementById("msg");
+function sendMessage(){
+    const input=document.getElementById("message");
     const text=input.value.trim();
     if(!text) return;
 
     const msg={
         type:"chat",
-        msgId:crypto.randomUUID(),
+        room:ROOM,
         name:username,
         text
     };
 
-    showChat(msg);
-    broadcast(msg);
+    socket.send(JSON.stringify(msg));
+    displayChat(msg);
 
     input.value="";
 }
 
-function showChat(d){
+function displayChat(d){
     let html=`<b>${d.name}:</b> `;
+
     if(d.text.startsWith("http"))
         html+=`<a href="${d.text}" target="_blank">${d.text}</a>`;
     else
         html+=d.text;
 
-    addChat(html);
+    add(html);
 }
 
 /* ---------- FILES ---------- */
@@ -217,19 +129,19 @@ document.getElementById("fileInput").addEventListener("change",e=>{
     if(!file) return;
 
     const reader=new FileReader();
-    reader.onload=x=>{
 
-        const data={
+    reader.onload=x=>{
+        const msg={
             type:"file",
-            msgId:crypto.randomUUID(),
+            room:ROOM,
             name:username,
             filename:file.name,
             filetype:file.type,
             data:x.target.result
         };
 
-        receiveFile(data);
-        broadcast(data);
+        socket.send(JSON.stringify(msg));
+        receiveFile(msg);
     };
 
     reader.readAsDataURL(file);
@@ -246,13 +158,14 @@ function receiveFile(d){
     else
         html+=`<a download="${d.filename}" href="${d.data}">Download ${d.filename}</a>`;
 
-    addChat(html);
+    add(html);
 }
 
-/* ENTER KEY */
-document.getElementById("msg").addEventListener("keypress",e=>{
-    if(e.key==="Enter") sendMsg();
+/* ENTER KEY SEND */
+document.getElementById("message").addEventListener("keypress",e=>{
+    if(e.key==="Enter") sendMessage();
 });
+
 </script>
 
 
