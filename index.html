@@ -16,10 +16,7 @@ body{
     text-align:center;
 }
 
-#players{
-    margin:10px auto;
-}
-
+#players{margin:10px;}
 .player{
     background:#1e2a55;
     padding:8px;
@@ -40,37 +37,13 @@ body{
 }
 
 .msg{
-    margin:8px 0;
+    margin:6px 0;
     padding:6px;
     background:#1c2b60;
     border-radius:6px;
 }
 
-img, video{
-    max-width:250px;
-    border-radius:6px;
-    margin-top:6px;
-}
-
-#controls{
-    margin-top:10px;
-}
-
-input{
-    padding:8px;
-    width:50%;
-    border-radius:6px;
-    border:none;
-}
-
-button{
-    padding:8px 14px;
-    border:none;
-    border-radius:6px;
-    background:#4c7dff;
-    color:white;
-    cursor:pointer;
-}
+img,video{max-width:250px;border-radius:6px;margin-top:6px;}
 </style>
 
 
@@ -79,102 +52,82 @@ button{
 <h1>🌐 Game Lobby</h1>
 
 <div id="players"></div>
-
 <div id="chat"></div>
 
-<div id="controls">
-    <input id="messageInput" placeholder="Type message or paste link...">
-    <button onclick="sendMessage()">Send</button>
-    <input type="file" id="fileInput">
-</div>
+<input id="msg" placeholder="Message..." style="width:50%">
+<button onclick="sendMsg()">Send</button>
+<input type="file" id="fileInput">
 
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 
 <script>
-const username = "Player-" + Math.floor(Math.random()*10000);
+const ROOM_ID = "global-game-room-fixed"; // ONE TRUE HOST
 
-const playersDiv = document.getElementById("players");
-const chatDiv = document.getElementById("chat");
-const fileInput = document.getElementById("fileInput");
+const username = "Player-" + Math.floor(Math.random()*10000);
 
 const peer = new Peer();
 let connections = {};
 let players = {};
+let seenMessages = new Set();
+
+const playersDiv=document.getElementById("players");
+const chat=document.getElementById("chat");
+
+/* ---------- UI ---------- */
 
 function renderPlayers(){
-    playersDiv.innerHTML="<h3>Players Online</h3>";
-    Object.values(players).forEach(name=>{
-        const div=document.createElement("div");
-        div.className="player";
-        div.textContent=name;
-        playersDiv.appendChild(div);
+    playersDiv.innerHTML="<h3>Players</h3>";
+    Object.values(players).forEach(p=>{
+        const d=document.createElement("div");
+        d.className="player";
+        d.textContent=p;
+        playersDiv.appendChild(d);
     });
 }
 
-function addMessage(html){
-    const div=document.createElement("div");
-    div.className="msg";
-    div.innerHTML=html;
-    chatDiv.appendChild(div);
-    chatDiv.scrollTop=chatDiv.scrollHeight;
+function addChat(html){
+    const d=document.createElement("div");
+    d.className="msg";
+    d.innerHTML=html;
+    chat.appendChild(d);
+    chat.scrollTop=chat.scrollHeight;
 }
 
-function broadcast(data){
-    Object.values(connections).forEach(c=>{
-        if(c.open) c.send(data);
-    });
-}
+/* ---------- NETWORK ---------- */
 
 peer.on("open", id=>{
+
     players[id]=username;
     renderPlayers();
 
-    const ROOM="global-game-room";
+    // try connect to host
+    const conn=peer.connect(ROOM_ID);
 
-    const host=new Peer(ROOM);
+    conn.on("open",()=>{
+        setupConnection(conn);
+    });
 
-    host.on("connection", conn=>setupConnection(conn));
+    // if host doesn't exist → become host
+    peer.on("connection", incoming=>{
+        setupConnection(incoming);
+    });
 
-    const conn=peer.connect(ROOM);
-    conn.on("open",()=>setupConnection(conn));
 });
+
+/* ---------- CONNECTION ---------- */
 
 function setupConnection(conn){
 
+    if(connections[conn.peer]) return;
     connections[conn.peer]=conn;
 
     conn.send({
         type:"join",
+        id:peer.id,
         name:username
     });
 
-    conn.on("data", data=>{
-
-        if(data.type==="join"){
-            players[conn.peer]=data.name;
-
-            conn.send({
-                type:"sync",
-                players
-            });
-
-            renderPlayers();
-        }
-
-        if(data.type==="sync"){
-            players=data.players;
-            players[peer.id]=username;
-            renderPlayers();
-        }
-
-        if(data.type==="chat"){
-            displayChat(data);
-        }
-
-        if(data.type==="file"){
-            receiveFile(data);
-        }
-    });
+    conn.on("data", handleData);
 
     conn.on("close",()=>{
         delete players[conn.peer];
@@ -182,89 +135,124 @@ function setupConnection(conn){
     });
 }
 
+/* ---------- MESSAGE HANDLER ---------- */
+
+function handleData(data){
+
+    // prevent duplicates
+    if(data.msgId){
+        if(seenMessages.has(data.msgId)) return;
+        seenMessages.add(data.msgId);
+    }
+
+    if(data.type==="join"){
+        players[data.id]=data.name;
+        renderPlayers();
+
+        broadcast({
+            type:"players",
+            players
+        });
+    }
+
+    if(data.type==="players"){
+        players=data.players;
+        players[peer.id]=username;
+        renderPlayers();
+    }
+
+    if(data.type==="chat"){
+        showChat(data);
+        broadcast(data);
+    }
+
+    if(data.type==="file"){
+        receiveFile(data);
+        broadcast(data);
+    }
+}
+
+/* ---------- BROADCAST ---------- */
+
+function broadcast(data){
+    Object.values(connections).forEach(c=>{
+        if(c.open) c.send(data);
+    });
+}
+
 /* ---------- CHAT ---------- */
 
-function sendMessage(){
-    const input=document.getElementById("messageInput");
+function sendMsg(){
+    const input=document.getElementById("msg");
     const text=input.value.trim();
     if(!text) return;
 
     const msg={
         type:"chat",
+        msgId:crypto.randomUUID(),
         name:username,
-        text:text
+        text
     };
 
-    displayChat(msg);
+    showChat(msg);
     broadcast(msg);
 
     input.value="";
 }
 
-function displayChat(data){
+function showChat(d){
+    let html=`<b>${d.name}:</b> `;
+    if(d.text.startsWith("http"))
+        html+=`<a href="${d.text}" target="_blank">${d.text}</a>`;
+    else
+        html+=d.text;
 
-    let content = `<b>${data.name}:</b> `;
-
-    // auto-detect links
-    if(data.text.startsWith("http")){
-        content += `<a href="${data.text}" target="_blank">${data.text}</a>`;
-    }else{
-        content += data.text;
-    }
-
-    addMessage(content);
+    addChat(html);
 }
 
-/* ---------- FILE SENDING ---------- */
+/* ---------- FILES ---------- */
 
-fileInput.addEventListener("change", ()=>{
-    const file=fileInput.files[0];
+document.getElementById("fileInput").addEventListener("change",e=>{
+    const file=e.target.files[0];
     if(!file) return;
 
     const reader=new FileReader();
+    reader.onload=x=>{
 
-    reader.onload=e=>{
-        const msg={
+        const data={
             type:"file",
+            msgId:crypto.randomUUID(),
             name:username,
             filename:file.name,
             filetype:file.type,
-            data:e.target.result
+            data:x.target.result
         };
 
-        broadcast(msg);
-        receiveFile(msg);
+        receiveFile(data);
+        broadcast(data);
     };
 
     reader.readAsDataURL(file);
 });
 
-function receiveFile(data){
+function receiveFile(d){
 
-    let html=`<b>${data.name} sent:</b><br>`;
+    let html=`<b>${d.name} sent:</b><br>`;
 
-    if(data.filetype.startsWith("image")){
-        html+=`<img src="${data.data}">`;
-    }
-    else if(data.filetype.startsWith("video")){
-        html+=`<video controls src="${data.data}"></video>`;
-    }
-    else{
-        html+=`
-        <a download="${data.filename}" href="${data.data}">
-        Download ${data.filename}
-        </a>`;
-    }
+    if(d.filetype.startsWith("image"))
+        html+=`<img src="${d.data}">`;
+    else if(d.filetype.startsWith("video"))
+        html+=`<video controls src="${d.data}"></video>`;
+    else
+        html+=`<a download="${d.filename}" href="${d.data}">Download ${d.filename}</a>`;
 
-    addMessage(html);
+    addChat(html);
 }
 
-/* ---------- ENTER KEY SEND ---------- */
-document.getElementById("messageInput")
-.addEventListener("keypress", e=>{
-    if(e.key==="Enter") sendMessage();
+/* ENTER KEY */
+document.getElementById("msg").addEventListener("keypress",e=>{
+    if(e.key==="Enter") sendMsg();
 });
-
 </script>
 
 
